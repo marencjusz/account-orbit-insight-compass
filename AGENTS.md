@@ -8,3 +8,5 @@
 > Commits you push to the connected branch sync back to Lovable and show up in
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
+
+- All backend calls go through `src/lib/api` (`api` export); `VITE_API_MODE=http` uses real relative `/api/*` endpoints, otherwise the mock adapter — keeps UI agnostic of backend.
