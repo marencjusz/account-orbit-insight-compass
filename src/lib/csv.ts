@@ -32,7 +32,7 @@ export function parseCsv(text: string): Record<string, string>[] {
   }
   const nonEmpty = rows.filter((r) => r.some((v) => v.trim() !== ""));
   if (nonEmpty.length === 0) throw new Error("The CSV file is empty.");
-  const headers = nonEmpty[0].map((h) => h.trim());
+  const headers = (nonEmpty[0] ?? []).map((h) => h.trim());
   return nonEmpty.slice(1).map((r) => {
     const o: Record<string, string> = {};
     headers.forEach((h, idx) => (o[h] = (r[idx] ?? "").trim()));

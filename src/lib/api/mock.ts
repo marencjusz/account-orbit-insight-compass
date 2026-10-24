@@ -40,17 +40,17 @@ const SIGNALS: PrimarySignal[] = [
 ];
 
 function mockAccount(row: Record<string, string>, idx: number): ScoredAccount {
-  const id = row.account_id || `ROW-${String(idx + 1).padStart(4, "0")}`;
+  const id = row['account_id'] || `ROW-${String(idx + 1).padStart(4, "0")}`;
   const r = rng(hash(id));
-  const revenue = num(row.current_revenue);
+  const revenue = num(row['current_revenue']);
   const raw = [r(), r(), r(), r()];
   const total = raw.reduce((a, b) => a + b, 0);
-  const [churn, contraction, stable, expansion] = raw.map((x) => Math.round((x / total) * 100) / 100);
-  const days = num(row.days_to_next_renewal);
+  const [churn = 0, contraction = 0, stable = 0, expansion = 0] = raw.map((x) => Math.round((x / total) * 100) / 100);
+  const days = num(row['days_to_next_renewal']);
   const urgency = days != null ? Math.max(0, Math.min(100, Math.round(100 - days / 3.65))) : Math.round(r() * 100);
   return {
     account_id: id,
-    account_name: row.account_name || null,
+    account_name: row['account_name'] || null,
     current_revenue: revenue,
     priority_score: Math.round(r() * 100),
     primary_signal: SIGNALS[Math.floor(r() * SIGNALS.length)],
@@ -91,7 +91,7 @@ const ACTIONS = [
 function pick<T>(arr: T[], n: number, r: () => number): T[] {
   const copy = [...arr];
   const out: T[] = [];
-  while (out.length < n && copy.length) out.push(copy.splice(Math.floor(r() * copy.length), 1)[0]);
+  while (out.length < n && copy.length) out.push(copy.splice(Math.floor(r() * copy.length), 1)[0] as T);
   return out;
 }
 
@@ -107,7 +107,7 @@ export const mockApi: ApiClient = {
     await delay(600 + (hash(account_id) % 600));
     const r = rng(hash(account_id + ":insight"));
     return {
-      summary: SUMMARIES[Math.floor(r() * SUMMARIES.length)],
+      summary: SUMMARIES[Math.floor(r() * SUMMARIES.length)] ?? null,
       insights: pick(INSIGHTS, 3, r),
       recommended_actions: pick(ACTIONS, 2, r),
     };

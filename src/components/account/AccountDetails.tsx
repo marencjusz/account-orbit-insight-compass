@@ -112,7 +112,7 @@ export function AccountDetails({ account }: { account: ScoredAccount | null }) {
   );
 }
 
-function BulletList({ title, items }: { title: string; items?: string[] | null }) {
+function BulletList({ title, items }: { title: string; items?: string[] | null | undefined }) {
   return (
     <div>
       <h4 className="text-sm font-semibold text-foreground">{title}</h4>

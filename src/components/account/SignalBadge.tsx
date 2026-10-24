@@ -7,7 +7,7 @@ const tones = {
   neutral: "bg-muted text-muted-foreground",
 };
 
-export function SignalBadge({ signal }: { signal?: string | null }) {
+export function SignalBadge({ signal }: { signal?: string | null | undefined }) {
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tones[signalTone(signal)]}`}>
       {signalLabel(signal)}

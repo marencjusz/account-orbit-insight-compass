@@ -10,23 +10,23 @@ export type PrimarySignal =
 
 /** Probability estimates. Extensible: unknown keys are rendered generically. */
 export interface AccountSignals {
-  churn_probability?: number | null;
-  contraction_probability?: number | null;
-  stable_probability?: number | null;
-  expansion_probability?: number | null;
+  churn_probability?: number | null | undefined;
+  contraction_probability?: number | null | undefined;
+  stable_probability?: number | null | undefined;
+  expansion_probability?: number | null | undefined;
   [key: string]: number | null | undefined;
 }
 
 export interface ScoredAccount {
   account_id: string;
-  account_name?: string | null;
-  current_revenue?: number | null;
-  priority_score?: number | null;
-  primary_signal?: PrimarySignal | null;
-  revenue_at_risk?: number | null;
-  expansion_opportunity?: number | null;
-  urgency_score?: number | null;
-  signals?: AccountSignals | null;
+  account_name?: string | null | undefined;
+  current_revenue?: number | null | undefined;
+  priority_score?: number | null | undefined;
+  primary_signal?: PrimarySignal | null | undefined;
+  revenue_at_risk?: number | null | undefined;
+  expansion_opportunity?: number | null | undefined;
+  urgency_score?: number | null | undefined;
+  signals?: AccountSignals | null | undefined;
 }
 
 export interface ScoreResponse {
@@ -38,9 +38,9 @@ export interface InsightRequest {
 }
 
 export interface InsightResponse {
-  summary?: string | null;
-  insights?: string[] | null;
-  recommended_actions?: string[] | null;
+  summary?: string | null | undefined;
+  insights?: string[] | null | undefined;
+  recommended_actions?: string[] | null | undefined;
 }
 
 export interface ApiClient {
