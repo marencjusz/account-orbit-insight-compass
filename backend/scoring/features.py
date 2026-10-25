@@ -66,7 +66,7 @@ def prepare_scoring_data(source: pd.DataFrame) -> pd.DataFrame:
     data["seat_change"] = pd.to_numeric(
         pd.Series([x.seat_change for x in extracted]),
         errors="coerce",
-    )
+    )/seats.where(seats > 0)
 
     return data
 

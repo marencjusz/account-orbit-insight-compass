@@ -52,9 +52,9 @@ OUTCOMES = ["churn", "contraction", "stable", "expansion"]
 
 M_NUM = [
     "log_days_since_contact",
-    "seat_change_ratio",
-    "has_seat_change",
+    "seat_change",
     "seat_utilization",
+    "seat_penetration"
 ]
 
 def pipeline(nums, cats):
@@ -187,7 +187,7 @@ def predict_magnitudes(
     data: pd.DataFrame,
 ) -> dict[str, np.ndarray]:
 
-    contraction = models["contraction"].predict(data)
+    contraction = models["loss"].predict(data)
     expansion = models["expansion"].predict(data)
 
     return {
