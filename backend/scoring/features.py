@@ -1,155 +1,128 @@
-
 import numpy as np
 import pandas as pd
 
 from .extract import extract_transcripts
 
 
-def prepare_scoring_data(df: pd.DataFrame) -> pd.DataFrame:
-    source = df.reset_index(drop=True)
-    data = pd.DataFrame(index=source.index)
 
-    # Account identification and monetary baseline
-    data["account_id"] = source["account_id"].astype(str)
-    data["account_name"] = source["account_name"]
-    data["current_revenue"] = pd.to_numeric(
-        source["current_revenue"], errors="coerce"
-    )
+def prepare_scoring_data(source: pd.DataFrame) -> pd.DataFrame:
 
-    # Product engagement
-    seats = pd.to_numeric(
-        source["nr_licensed_seats"], errors="coerce"
-    )
-    users = pd.to_numeric(
-        source["nr_active_users"], errors="coerce"
-    )
-    employees = pd.to_numeric(
-        source["nr_employees"], errors="coerce"
+    numeric = [
+        "current_revenue", "nr_employees",
+        "nr_licensed_seats", "nr_active_users",
+        "ai_usage", "nr_support_tickets",
+        "days_to_next_renewal",
+        "days_since_last_sales_activity",
+    ]
+
+    data = source[["account_id", "account_name"] + numeric].copy()
+
+    # Data types
+    data["account_id"] = data["account_id"].astype(str)
+    data[numeric] = data[numeric].apply(
+        pd.to_numeric, errors="coerce"
     )
 
-    data["seat_utilization"] = users / seats.where(seats > 0)
+    # Numerical features
+    seats = data["nr_licensed_seats"]
+    employees = data["nr_employees"]
+
+    data["seat_utilization"] = data["nr_active_users"] / seats.where(seats > 0)
+    data["seat_penetration"] = seats / employees.where(employees > 0)
+
+    # Squared features
     data["seat_utilization_sq"] = data["seat_utilization"] ** 2
-
-    data["ai_usage"] = pd.to_numeric(
-        source["ai_usage"], errors="coerce"
-    )
     data["ai_usage_sq"] = data["ai_usage"] ** 2
 
-    data["seat_penetration"] = (
-        seats / employees.where(employees > 0)
-    )
-
-    # Support and renewal
-    data["nr_support_tickets"] = pd.to_numeric(
-        source["nr_support_tickets"], errors="coerce"
-    )
-    data["days_to_next_renewal"] = pd.to_numeric(
-        source["days_to_next_renewal"], errors="coerce"
-    )
-
-    # Commercial importance
+    # Log features
     data["log_revenue"] = np.log1p(
         data["current_revenue"].clip(lower=0)
     )
-    data["log_employees"] = np.log1p(
-        employees.clip(lower=0)
+    data["log_employees"] = np.log1p(employees.clip(lower=0))
+    data["log_days_since_contact"] = np.log1p(
+        data["days_since_last_sales_activity"].clip(lower=0)
     )
 
-    # Company characteristics
-    for col in ("industry", "segment", "region"):
-        data[col] = source[col].where(
-            source[col].notna(), np.nan
+    # Gemini extraction
+    accounts = [
+        {
+            "summary": summary.strip(),
+            "nr_employees": int(n) if pd.notna(n) else None,
+            "nr_licensed_seats": int(s) if pd.notna(s) else None,
+            "nr_active_users": int(u) if pd.notna(u) else None,
+        }
+        for summary, n, s, u in zip(
+            source["call_transcript_summary"].fillna("").astype(str),
+            employees,
+            seats,
+            data["nr_active_users"],
         )
+    ]
 
-    # LLM-extracted transcript features
-    summaries = (
-        source["call_transcript_summary"]
-        .fillna("")
-        .astype(str)
-        .tolist()
-    )
-
-    extracted = extract_transcripts(summaries)
+    extracted = extract_transcripts(accounts)
 
     data["signal"] = [x.signal for x in extracted]
     data["reason"] = [x.reason for x in extracted]
-
-    changes = pd.to_numeric(
+    data["seat_change"] = pd.to_numeric(
         pd.Series([x.seat_change for x in extracted]),
         errors="coerce",
     )
 
-    data["has_seat_change"] = changes.notna().astype(int)
-    data["seat_change_ratio"] = (
-        changes.fillna(0)
-        / seats.where(seats > 0)
-    ).fillna(0)
-
     return data
 
 
-def set_treatment(
+def set_contact_recency(
     data: pd.DataFrame,
-    treatment: int | None = None,
+    days_since: float,
 ) -> pd.DataFrame:
     result = data.copy()
 
-    if treatment is not None:
-        result["treatment"] = treatment
-
-    result["treatment_utilization"] = (
-        result["treatment"] * result["seat_utilization"]
-    )
-    result["treatment_ai_usage"] = (
-        result["treatment"] * result["ai_usage"]
-    )
-    result["treatment_penetration"] = (
-        result["treatment"] * result["seat_penetration"]
-    )
+    result["days_since_last_sales_activity"] = days_since
+    result["log_days_since_contact"] = np.log1p(days_since)
 
     return result
 
 
-def prepare_training_data(df: pd.DataFrame) -> pd.DataFrame:
-    source = df.reset_index(drop=True)
+def prepare_training_data(source: pd.DataFrame) -> pd.DataFrame:
     data = prepare_scoring_data(source)
 
     end_revenue = pd.to_numeric(
         source["revenue_end_of_quarter"],
         errors="coerce",
     )
-    days_since = pd.to_numeric(
-        source["days_since_last_sales_activity"],
-        errors="coerce",
-    )
 
-    # Keep observations with known treatment and outcome
+    # Keep observations with valid treatment and outcome
     valid = (
         data["current_revenue"].gt(0)
         & end_revenue.notna()
-        & days_since.notna()
+        & data["days_since_last_sales_activity"].notna()
+        & data["days_since_last_sales_activity"].ge(0)
     )
 
     data = data.loc[valid].copy()
     end_revenue = end_revenue.loc[valid]
-    days_since = days_since.loc[valid]
 
-    # Treatment assignment
-    data["treatment"] = days_since.le(90).astype(int)
+    # Propensity categories: 0-30, 31-60, 61-90, 91+
+    data["contact_bin"] = pd.cut(
+        data["days_since_last_sales_activity"],
+        bins=[-np.inf, 30, 60, 90, np.inf],
+        labels=[0, 1, 2, 3],
+    ).astype(int)
 
-    # Revenue change and outcome
+    # Relative revenue change
     data["revenue_change"] = (
         end_revenue / data["current_revenue"] - 1
     )
 
+    # Three outcome categories
     data["outcome"] = np.select(
         [
-            end_revenue.le(0),
             data["revenue_change"].lt(-1e-6),
             data["revenue_change"].gt(1e-6),
         ],
-        ["churn", "contraction", "expansion"],
+        ["loss", "expansion"],
         default="stable",
     )
 
-    return set_treatment(data)
+    return data
+

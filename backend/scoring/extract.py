@@ -10,8 +10,9 @@ from google import genai
 from google.genai import types
 
 from backend.scoring.schemas import ExtractionBatch, TranscriptFeatures
+from backend.scoring.prompts import EXTRACT_PROMPT
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CACHE_PATH = ROOT / ".cache" / "transcripts.json"
 
 
@@ -27,10 +28,8 @@ def extract_batch(accounts: list[dict]) -> ExtractionBatch:
     response = client.models.generate_content(
         model="gemini-3.5-flash-lite",
         contents=(
-            "Extract exactly three structured fields from each "
-            "sales-call summary. Use only explicit information. "
-            "Do not invent intentions or quantities. "
-            "Return every account_id exactly once.\n"
+            EXTRACT_PROMPT
+            + "\nACCOUNTS DATA:\n"
             + json.dumps(accounts, ensure_ascii=False)
         ),
         config=types.GenerateContentConfig(
@@ -46,9 +45,10 @@ def extract_batch(accounts: list[dict]) -> ExtractionBatch:
     return ExtractionBatch.model_validate_json(response.text)
 
 
+
 def extract_transcripts(
-    summaries: list[str],
-    batch_size: int = 20,
+    accounts: list[dict],
+    batch_size: int = 50,
 ) -> list[TranscriptFeatures]:
 
     cache = (
@@ -57,16 +57,19 @@ def extract_transcripts(
         else {}
     )
 
-    summaries = [s.strip() for s in summaries]
+    def key(account: dict) -> str:
+        content = json.dumps(
+            account,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-    def key(s: str) -> str:
-        return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-    # Unique, uncached transcripts only
+    # Unique, uncached accounts with nonempty summaries
     pending = {
-        key(s): s
-        for s in summaries
-        if s and key(s) not in cache
+        key(account): account
+        for account in accounts
+        if account["summary"] and key(account) not in cache
     }
 
     pending = list(pending.items())
@@ -75,8 +78,8 @@ def extract_transcripts(
         batch = pending[start:start + batch_size]
 
         requests = [
-            {"account_id": str(i), "summary": summary}
-            for i, (_, summary) in enumerate(batch)
+            {"account_id": str(i), **account}
+            for i, (_, account) in enumerate(batch)
         ]
 
         for attempt in range(3):
@@ -113,13 +116,13 @@ def extract_transcripts(
         )
 
     empty = TranscriptFeatures(
-        signal="none",
-        reason="unknown",
-        seat_change=None,
+        signal="keep",
+        reason="other",
+        seat_change=0,
     )
 
     return [
-        TranscriptFeatures.model_validate(cache[key(s)])
-        if s else empty.model_copy()
-        for s in summaries
+        TranscriptFeatures.model_validate(cache[key(account)])
+        if account["summary"] else empty.model_copy()
+        for account in accounts
     ]

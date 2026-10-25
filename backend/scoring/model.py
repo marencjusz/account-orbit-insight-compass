@@ -6,14 +6,14 @@ import pandas as pd
 
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from .features import (
     prepare_scoring_data,
     prepare_training_data,
-    set_treatment,
+    set_contact_recency,
 )
 
 from backend.schemas import ScoredAccount
@@ -33,18 +33,14 @@ P_NUM = [
     "log_employees",
 ]
 
-P_CAT = ["industry", "segment", "region"]
+P_CAT = []
 
 O_NUM = [
     "seat_utilization",
     "ai_usage",
-    "seat_penetration",
     "nr_support_tickets",
     "days_to_next_renewal",
-    "treatment",
-    "treatment_utilization",
-    "treatment_ai_usage",
-    "treatment_penetration",
+    "log_days_since_contact",
 ]
 
 O_CAT = [
@@ -55,12 +51,10 @@ O_CAT = [
 OUTCOMES = ["churn", "contraction", "stable", "expansion"]
 
 M_NUM = [
+    "log_days_since_contact",
     "seat_change_ratio",
     "has_seat_change",
     "seat_utilization",
-    "seat_penetration",
-    "ai_usage",
-    "treatment",
 ]
 
 def pipeline(nums, cats):
@@ -107,24 +101,34 @@ def expected_fraction(probs, classes, magnitudes):
     )
 
 
+
 def fit_propensity_model(
     data: pd.DataFrame,
 ) -> tuple[Pipeline, np.ndarray]:
 
     model = pipeline(P_NUM, P_CAT)
-    model.fit(data, data["treatment"])
+    model.fit(data, data["contact_bin"])
 
-    probabilities = model.predict_proba(data)[:, 1]
-    propensity = np.clip(probabilities, 0.2, 0.8)
+    # Probability of each of the four contact-recency bins
+    probabilities = model.predict_proba(data)
 
-    treatment = data["treatment"].to_numpy()
+    bins = data["contact_bin"].to_numpy(dtype=int)
+    observed_probabilities = probabilities[
+        np.arange(len(data)), bins
+    ]
 
-    weights = np.where(
-        treatment == 1,
-        1 / propensity,
-        1 / (1 - propensity),
+    # Marginal frequency of each bin
+    frequencies = np.bincount(bins, minlength=4) / len(bins)
+
+    # Stabilized inverse propensity weights
+    weights = (
+        frequencies[bins]
+        / np.maximum(observed_probabilities, 1e-6)
     )
-    weights = weights/weights.mean()
+
+    # Limit extreme observations
+    weights = np.minimum(weights, 5.0)
+    weights /= weights.mean()
 
     return model, weights
 
@@ -152,17 +156,19 @@ def fit_magnitude_models(
 
     models = {}
 
-    for outcome in ("contraction", "expansion"):
+    for outcome in ("loss", "expansion"):
         relevant = data["outcome"] == outcome
 
         model = Pipeline([
             ("features", ColumnTransformer([
                 ("numeric", Pipeline([
                     ("fill", SimpleImputer(strategy="median")),
-                    ("scale", StandardScaler()),
                 ]), M_NUM),
+                ("categorical", OneHotEncoder(
+                    handle_unknown="ignore"
+                ), ["signal"]),
             ])),
-            ("regressor", Ridge(alpha=10.0)),
+            ("regressor", LinearRegression()),
         ])
 
         model.fit(
@@ -223,8 +229,8 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
     classes = outcome.named_steps["classifier"].classes_
 
     # Counterfactual datasets
-    x0 = set_treatment(data, 0)
-    x1 = set_treatment(data, 1)
+    x0 = data
+    x1 = set_contact_recency(data, 0)
 
     # Predict outcome probabilities under each treatment
     p0 = outcome.predict_proba(x0)

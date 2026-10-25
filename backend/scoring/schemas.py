@@ -5,45 +5,43 @@ from pydantic import BaseModel, Field
 
 class TranscriptFeatures(BaseModel):
     signal: Annotated[Literal[
-        "churn",
-        "reduce",
-        "keep",
-        "expand",
-        "none",
-    ], Field(
-        description=(
-            "Customer's stated subscription intention. "
-            "Use 'none' if no clear intention is expressed. "
-            "Do not infer an intention from dissatisfaction alone."
-        )
-    )]
-
+        "churn", "reduce", "keep", "expand",
+    ], Field(description=(
+        "Customer subscription intention, meaning what would they do without intervention. "
+        "Viable categories: "
+        "churn = very likely cancellation or nonrenewal; "
+        "reduce = negative sentiment, short of explicitly considering churn but "
+        "implying some dissatisfaction or pressure; "
+        "keep = unchanged subscription or no clear intention; "
+        "positive = positive sentiment, with no direct intent to immediately expand, "
+        "but leaning this way and can be persuadable; "
+        "expand = explicitly stated aim of subscription increase. "
+        "Do reasonable but cautious inference from provided transcript. If uncertain, "
+        "return keep or weaker signal (eg reduce not churn for noegative sentiment but "
+        "not exactly stated churn intent)."
+    ))]
     reason: Annotated[Literal[
-        "financial_pressure",
-        "low_adoption_or_roi",
-        "product_issues",
-        "competition",
-        "business_growth",
-        "organizational_change",
-        "positive_product_value",
-        "other",
-        "unknown",
-    ], Field(
-        description=(
-            "Main reason for the customer's situation or decision. "
-            "Use 'unknown' when no reason is identifiable. "
-            "Choose the single most important reason."
-        )
-    )]
+        "commercial", "product", "other",
+    ], Field(description=(
+        "Category of stated reason for main signal: "
+        "commercial: reasons not related to product but to commercial "
+        "situation of the comapny (both positive and negative) like budget, "
+        "competition, restructuring, growth; "
+        "product = reasons related to product itself: adoption, ROI, technical problems; "
+        "other = no identifiable reason or visibly distinct to the above."
+    ))]
+    seat_change: Annotated[int, Field(description=(
+        "Number of licensed seats to add (positive) or remove (negative). "
+        "Only change relative tu current level, interpreted as what would "
+        "likely happen if there is no intervention. Cautious inference is permitted, eg. "
+        "for churn intent, return or current seats; for reduction/expansion "
+        "try to infer likely scale based on number of employees/licenced seats/used licences. "
+        "You can also use other items in the batch to help infer possible scale. "
+        "Return 0 if not stated and cannot be inferred (eg very cautious positive sentiment that "
+        "if not persuaded, would maybe order some new licences but not in the immediatge future), "
+        "or if intent is to keep current seats."
+    ))]
 
-    seat_change: Annotated[int | None, Field(
-        description=(
-            "Explicitly mentioned change in licensed seats. "
-            "Positive for expansion, negative for reduction. "
-            "None if no specific seat count is provided. "
-            "Do not estimate or infer missing quantities."
-        )
-    )]
 
 class AccountExtraction(BaseModel):
     account_id: str
@@ -51,4 +49,4 @@ class AccountExtraction(BaseModel):
 
 
 class ExtractionBatch(BaseModel):
-    accounts: List[AccountExtraction]
+    accounts: list[AccountExtraction]
