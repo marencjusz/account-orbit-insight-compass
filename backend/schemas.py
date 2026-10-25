@@ -13,6 +13,11 @@ class ScoredAccount(BaseModel):
     expansion_opportunity: float | None = None
     urgency_score: int | None = Field(default=None, ge=0, le=100)
     signals: dict[str, float | None] | None = None
+    loss_probability_impact: float | None = None
+    expansion_probability_impact: float | None = None
+    expected_loss_impact: float | None = None
+    expected_expansion_impact: float | None = None
+    expected_revenue_impact: float | None = None
 
 
 class ScoreResponse(BaseModel):

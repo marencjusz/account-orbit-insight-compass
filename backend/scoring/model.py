@@ -332,6 +332,29 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
                 f"{k}_probability": round(v, 4)
                 for k, v in p.items()
             },
+            loss_probability_impact=round(
+                p["loss"] - float(p1[i, indices["loss"]]), 6
+            ),
+            expansion_probability_impact=round(
+                float(p1[i, indices["expansion"]]) - p["expansion"], 6
+            ),
+            expected_loss_impact=(
+                round(float(
+                    risk - money * p1[i, indices["loss"]] * m1["loss"][i]
+                ), 2)
+                if has_revenue else None
+            ),
+            expected_expansion_impact=(
+                round(float(
+                    money * p1[i, indices["expansion"]] * m1["expansion"][i]
+                    - expansion
+                ), 2)
+                if has_revenue else None
+            ),
+            expected_revenue_impact=(
+                round(float(r1[i] - r0[i]), 2)
+                if has_revenue else None
+            ),
         ))
 
     return scores

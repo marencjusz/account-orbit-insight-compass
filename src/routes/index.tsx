@@ -28,7 +28,7 @@ function Index() {
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<ScoredAccount[] | null>(null);
-  const [sort, setSort] = useState<SortKey>("priority");
+  const [sort, setSort] = useState<SortKey>("expected_revenue_impact");
   const [visible, setVisible] = useState(PAGE);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const reqId = useRef(0);

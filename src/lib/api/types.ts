@@ -27,6 +27,11 @@ export interface ScoredAccount {
   expansion_opportunity?: number | null | undefined;
   urgency_score?: number | null | undefined;
   signals?: AccountSignals | null | undefined;
+  loss_probability_impact?: number | null;
+  expansion_probability_impact?: number | null;
+  expected_loss_impact?: number | null;
+  expected_expansion_impact?: number | null;
+  expected_revenue_impact?: number | null;
 }
 
 export interface ScoreResponse {

@@ -2,20 +2,27 @@ import type { ScoredAccount } from "@/lib/api";
 import { isNum, money } from "@/lib/format";
 import { SignalBadge } from "./SignalBadge";
 
-export type SortKey = "priority" | "risk" | "expansion" | "urgency";
+export type SortKey =
+  | "loss_probability_impact"
+  | "expansion_probability_impact"
+  | "expected_loss_impact"
+  | "expected_expansion_impact"
+  | "expected_revenue_impact";
 
 export const SORT_OPTIONS: { value: SortKey; label: string }[] = [
-  { value: "priority", label: "Overall priority" },
-  { value: "risk", label: "Revenue at risk" },
-  { value: "expansion", label: "Expansion opportunity" },
-  { value: "urgency", label: "Urgency" },
+  { value: "loss_probability_impact", label: "Loss probability reduction" },
+  { value: "expansion_probability_impact", label: "Expansion probability increase" },
+  { value: "expected_loss_impact", label: "Expected loss reduction" },
+  { value: "expected_expansion_impact", label: "Expected expansion increase" },
+  { value: "expected_revenue_impact", label: "Total expected revenue impact" },
 ];
 
 const field: Record<SortKey, keyof ScoredAccount> = {
-  priority: "priority_score",
-  risk: "revenue_at_risk",
-  expansion: "expansion_opportunity",
-  urgency: "urgency_score",
+  loss_probability_impact: "loss_probability_impact",
+  expansion_probability_impact: "expansion_probability_impact",
+  expected_loss_impact: "expected_loss_impact",
+  expected_expansion_impact: "expected_expansion_impact",
+  expected_revenue_impact: "expected_revenue_impact",
 };
 
 /** Sort full dataset descending; missing values go last. */
@@ -27,6 +34,21 @@ export function sortAccounts(list: ScoredAccount[], key: SortKey): ScoredAccount
     if (an && bn) return (bv as number) - (av as number);
     return an ? -1 : bn ? 1 : 0;
   });
+}
+
+function sortValue(a: ScoredAccount, key: SortKey): string {
+  const value = a[field[key]];
+
+  if (!isNum(value)) return "—";
+
+  if (
+    key === "loss_probability_impact" ||
+    key === "expansion_probability_impact"
+  ) {
+    return `${value > 0 ? "+" : ""}${(value * 100).toFixed(1)} pp`;
+  }
+
+  return `${value > 0 ? "+" : ""}${money(value)}`;
 }
 
 function exposure(a: ScoredAccount): { label: string; value: string } | null {
@@ -102,9 +124,11 @@ export function AccountList({ accounts, total, sort, onSort, selectedId, onSelec
                 </span>
                 <span className="text-right">
                   <span className="block font-mono text-lg font-semibold tabular-nums text-foreground">
-                    {isNum(a.priority_score) ? Math.round(a.priority_score) : "—"}
+                    {sortValue(a, sort)}
                   </span>
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">priority</span>
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {SORT_OPTIONS.find(o => o.value === sort)?.label}
+                  </span>
                 </span>
               </button>
             </li>
