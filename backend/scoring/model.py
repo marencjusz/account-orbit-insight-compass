@@ -6,38 +6,62 @@ import pandas as pd
 
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from .features import prepare_features
+from .features import (
+    prepare_scoring_data,
+    prepare_training_data,
+    set_treatment,
+)
+
 from backend.schemas import ScoredAccount
 
 
 MODEL_PATH = Path(__file__).with_name("model.joblib")
 
-P_NUM = ["nr_employees"]
+P_NUM = [
+    "seat_utilization",
+    "seat_utilization_sq",
+    "ai_usage",
+    "ai_usage_sq",
+    "seat_penetration",
+    "nr_support_tickets",
+    "days_to_next_renewal",
+    "log_revenue",
+    "log_employees",
+]
+
 P_CAT = ["industry", "segment", "region"]
 
 O_NUM = [
     "seat_utilization",
     "ai_usage",
+    "seat_penetration",
     "nr_support_tickets",
     "days_to_next_renewal",
-    "seat_change_ratio",
-    "has_seat_change",
     "treatment",
+    "treatment_utilization",
+    "treatment_ai_usage",
+    "treatment_penetration",
 ]
 
 O_CAT = [
     "signal",
     "reason",
-    "treatment_signal",
-    "treatment_reason",
 ]
 
 OUTCOMES = ["churn", "contraction", "stable", "expansion"]
 
+M_NUM = [
+    "seat_change_ratio",
+    "has_seat_change",
+    "seat_utilization",
+    "seat_penetration",
+    "ai_usage",
+    "treatment",
+]
 
 def pipeline(nums, cats):
     preprocessing = ColumnTransformer([
@@ -68,118 +92,110 @@ def pipeline(nums, cats):
     ])
 
 
-def set_treatment(data: pd.DataFrame, treatment: int) -> pd.DataFrame:
-    x = data.copy()
-
-    x["treatment"] = treatment
-    x["treatment_signal"] = np.where(
-        treatment == 1, x["signal"], "untreated"
-    )
-    x["treatment_reason"] = np.where(
-        treatment == 1, x["reason"], "untreated"
-    )
-
-    return x
-
-
-def expected_fraction(probs, classes, magnitudes, treatment):
-    values = {
-        "churn": 0.0,
-        "contraction": 1 + magnitudes["contraction"][treatment],
-        "stable": 1.0,
-        "expansion": 1 + magnitudes["expansion"][treatment],
+def expected_fraction(probs, classes, magnitudes):
+    indices = {
+        label: list(classes).index(label)
+        for label in OUTCOMES
     }
 
-    return probs @ np.array([values[c] for c in classes])
-
-
-def train_model(df: pd.DataFrame) -> None:
-    if "revenue_end_of_quarter" not in df:
-        raise ValueError("Training requires revenue_end_of_quarter")
-
-    data = prepare_features(df)
-
-    data["revenue_end_of_quarter"] = pd.to_numeric(
-        data["revenue_end_of_quarter"],
-        errors="coerce",
+    return (
+        probs[:, indices["stable"]]
+        + probs[:, indices["contraction"]]
+          * (1 - magnitudes["contraction"])
+        + probs[:, indices["expansion"]]
+          * (1 + magnitudes["expansion"])
     )
 
-    data = data.dropna(subset=[
-        "current_revenue",
-        "revenue_end_of_quarter",
-        "days_since_last_sales_activity",
-    ])
 
-    data = data[data["current_revenue"] > 0].copy()
+def fit_propensity_model(
+    data: pd.DataFrame,
+) -> tuple[Pipeline, np.ndarray]:
 
-    # Observational treatment proxy
-    data["treatment"] = (
-        data["days_since_last_sales_activity"] <= 90
-    ).astype(int)
+    model = pipeline(P_NUM, P_CAT)
+    model.fit(data, data["treatment"])
 
-    delta = (
-        data["revenue_end_of_quarter"] / data["current_revenue"] - 1
+    probabilities = model.predict_proba(data)[:, 1]
+    propensity = np.clip(probabilities, 0.2, 0.8)
+
+    treatment = data["treatment"].to_numpy()
+
+    weights = np.where(
+        treatment == 1,
+        1 / propensity,
+        1 / (1 - propensity),
     )
+    weights = weights/weights.mean()
 
-    # Four-category supervised outcome
-    data["outcome"] = np.select(
-        [
-            data["revenue_end_of_quarter"] <= 0,
-            delta < -1e-6,
-            delta > 1e-6,
-        ],
-        ["churn", "contraction", "expansion"],
-        default="stable",
-    )
+    return model, weights
 
-    # Propensity model
-    propensity = pipeline(P_NUM, P_CAT)
-    propensity.fit(data, data["treatment"])
 
-    classes = propensity.named_steps["classifier"].classes_
-    e = propensity.predict_proba(data)[:, list(classes).index(1)]
+def fit_outcome_model(
+    data: pd.DataFrame,
+    weights: np.ndarray,
+) -> Pipeline:
 
-    # Inverse propensity weights, clipped
-    e = np.clip(e, 0.1, 0.9)
-    t = data["treatment"].to_numpy()
+    model = pipeline(O_NUM, O_CAT)
 
-    weights = np.where(t == 1, 1 / e, 1 / (1 - e))
-    weights /= weights.mean()
-
-    # Treatment interactions with transcript signals
-    data["treatment_signal"] = np.where(
-        t == 1, data["signal"], "untreated"
-    )
-    data["treatment_reason"] = np.where(
-        t == 1, data["reason"], "untreated"
-    )
-
-    # Weighted multinomial outcome model
-    outcome = pipeline(O_NUM, O_CAT)
-
-    outcome.fit(
+    model.fit(
         data,
         data["outcome"],
         classifier__sample_weight=weights,
     )
 
-    # Conditional magnitude estimates, shrunk toward pooled means
-    magnitudes = {}
+    return model
 
-    for label in ("contraction", "expansion"):
-        relevant = data["outcome"] == label
-        pooled = float(delta.loc[relevant].mean())
 
-        magnitudes[label] = {}
+def fit_magnitude_models(
+    data: pd.DataFrame,
+    weights: np.ndarray,
+) -> dict[str, Pipeline]:
 
-        for tr in (0, 1):
-            values = delta.loc[
-                relevant & (data["treatment"] == tr)
-            ]
+    models = {}
 
-            magnitudes[label][tr] = float(
-                (values.sum() + 10 * pooled) / (len(values) + 10)
-            )
+    for outcome in ("contraction", "expansion"):
+        relevant = data["outcome"] == outcome
+
+        model = Pipeline([
+            ("features", ColumnTransformer([
+                ("numeric", Pipeline([
+                    ("fill", SimpleImputer(strategy="median")),
+                    ("scale", StandardScaler()),
+                ]), M_NUM),
+            ])),
+            ("regressor", Ridge(alpha=10.0)),
+        ])
+
+        model.fit(
+            data.loc[relevant],
+            data.loc[relevant, "revenue_change"].abs(),
+            regressor__sample_weight=weights[relevant.to_numpy()],
+        )
+
+        models[outcome] = model
+
+    return models
+
+
+def predict_magnitudes(
+    models: dict[str, Pipeline],
+    data: pd.DataFrame,
+) -> dict[str, np.ndarray]:
+
+    contraction = models["contraction"].predict(data)
+    expansion = models["expansion"].predict(data)
+
+    return {
+        "contraction": np.clip(contraction, 0, 1),
+        "expansion": np.maximum(expansion, 0),
+    }
+
+
+def train_model(df: pd.DataFrame) -> None:
+    data = prepare_training_data(df)
+
+    propensity, weights = fit_propensity_model(data)
+    outcome = fit_outcome_model(data, weights)
+    magnitudes = fit_magnitude_models(data, weights)
 
     joblib.dump(
         {
@@ -197,19 +213,26 @@ def train_model(df: pd.DataFrame) -> None:
     )
 
 
+
 def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
-    # Only load model artifacts created by this project.
     artifact = joblib.load(MODEL_PATH)
 
-    data = prepare_features(df)
-
+    data = prepare_scoring_data(df)
     outcome = artifact["outcome"]
     magnitudes = artifact["magnitudes"]
     classes = outcome.named_steps["classifier"].classes_
 
-    # Counterfactual outcome distributions
-    p0 = outcome.predict_proba(set_treatment(data, 0))
-    p1 = outcome.predict_proba(set_treatment(data, 1))
+    # Counterfactual datasets
+    x0 = set_treatment(data, 0)
+    x1 = set_treatment(data, 1)
+
+    # Predict outcome probabilities under each treatment
+    p0 = outcome.predict_proba(x0)
+    p1 = outcome.predict_proba(x1)
+
+    # Predict account-specific revenue change magnitudes
+    m0 = predict_magnitudes(magnitudes, x0)
+    m1 = predict_magnitudes(magnitudes, x1)
 
     revenue = (
         data["current_revenue"]
@@ -218,12 +241,9 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
         .to_numpy()
     )
 
-    r0 = revenue * expected_fraction(
-        p0, classes, magnitudes, 0
-    )
-    r1 = revenue * expected_fraction(
-        p1, classes, magnitudes, 1
-    )
+    # Expected revenue with and without intervention
+    r0 = revenue * expected_fraction(p0, classes, m0)
+    r1 = revenue * expected_fraction(p1, classes, m1)
 
     # Estimated nonnegative intervention value
     uplift = np.maximum(r1 - r0, 0)
@@ -245,15 +265,17 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
         money = float(revenue[i])
         has_revenue = pd.notna(row["current_revenue"])
 
+        # Expected financial exposure without intervention
         risk = money * (
             p["churn"]
-            - magnitudes["contraction"][0] * p["contraction"]
+            + p["contraction"] * m0["contraction"][i]
         )
 
+        # Expected expansion value without intervention
         expansion = (
             money
             * p["expansion"]
-            * magnitudes["expansion"][0]
+            * m0["expansion"][i]
         )
 
         renewal = row["days_to_next_renewal"]
@@ -266,6 +288,7 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
             else None
         )
 
+        # Primary attention signal
         if p["churn"] > 0.25:
             signal = "churn_risk"
         elif p["contraction"] > 0.20:
@@ -295,9 +318,11 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
                 if has_revenue else None
             ),
             primary_signal=signal,
-            revenue_at_risk=round(risk, 2) if has_revenue else None,
+            revenue_at_risk=(
+                round(float(risk), 2) if has_revenue else None
+            ),
             expansion_opportunity=(
-                round(expansion, 2) if has_revenue else None
+                round(float(expansion), 2) if has_revenue else None
             ),
             urgency_score=urgency,
             signals={

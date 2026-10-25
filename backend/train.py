@@ -11,4 +11,9 @@ if __name__ == "__main__":
             "Usage: uv run python -m backend.train path/to/account_data.csv"
         )
 
-    train_model(pd.read_csv(sys.argv[1]))
+    train_model(
+        pd.read_csv(
+            sys.argv[1],
+            keep_default_na=False,
+            na_values=[""],
+            ))

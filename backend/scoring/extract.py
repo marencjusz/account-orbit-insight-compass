@@ -1,34 +1,35 @@
 
+import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from backend.scoring.schemas import ExtractionBatch
+from backend.scoring.schemas import ExtractionBatch, TranscriptFeatures
+
+ROOT = Path(__file__).resolve().parents[1]
+CACHE_PATH = ROOT / ".cache" / "transcripts.json"
 
 
 def extract_batch(accounts: list[dict]) -> ExtractionBatch:
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    load_dotenv(ROOT / ".env")
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY not found in the project .env"
-        )
+        raise RuntimeError("GEMINI_API_KEY not found in .env")
 
     client = genai.Client(api_key=api_key)
 
     response = client.models.generate_content(
         model="gemini-3.5-flash-lite",
         contents=(
-            "For each account, extract exactly three structured fields "
-            "from its one-sentence sales-call summary. "
-            "Use only explicit information. "
-            "Do not guess intentions or quantities. "
-            "Use null for unknown seat changes. "
+            "Extract exactly three structured fields from each "
+            "sales-call summary. Use only explicit information. "
+            "Do not invent intentions or quantities. "
             "Return every account_id exactly once.\n"
             + json.dumps(accounts, ensure_ascii=False)
         ),
@@ -40,6 +41,85 @@ def extract_batch(accounts: list[dict]) -> ExtractionBatch:
     )
 
     if not response.text:
-        raise RuntimeError("Empty Gemini extraction response")
+        raise RuntimeError("Empty Gemini response")
 
     return ExtractionBatch.model_validate_json(response.text)
+
+
+def extract_transcripts(
+    summaries: list[str],
+    batch_size: int = 20,
+) -> list[TranscriptFeatures]:
+
+    cache = (
+        json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        if CACHE_PATH.exists()
+        else {}
+    )
+
+    summaries = [s.strip() for s in summaries]
+
+    def key(s: str) -> str:
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+    # Unique, uncached transcripts only
+    pending = {
+        key(s): s
+        for s in summaries
+        if s and key(s) not in cache
+    }
+
+    pending = list(pending.items())
+
+    for start in range(0, len(pending), batch_size):
+        batch = pending[start:start + batch_size]
+
+        requests = [
+            {"account_id": str(i), "summary": summary}
+            for i, (_, summary) in enumerate(batch)
+        ]
+
+        for attempt in range(3):
+            try:
+                result = extract_batch(requests)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(5 * 2**attempt)
+
+        received = {
+            item.account_id: item.features
+            for item in result.accounts
+        }
+
+        expected = {str(i) for i in range(len(batch))}
+        if set(received) != expected or len(result.accounts) != len(batch):
+            raise RuntimeError("Incomplete transcript extraction")
+
+        for i, (hash_key, _) in enumerate(batch):
+            cache[hash_key] = received[str(i)].model_dump()
+
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_PATH.write_text(
+            json.dumps(cache, indent=2),
+            encoding="utf-8",
+        )
+
+        print(
+            f"Extracted {min(start + batch_size, len(pending))}"
+            f"/{len(pending)} new transcripts",
+            flush=True,
+        )
+
+    empty = TranscriptFeatures(
+        signal="none",
+        reason="unknown",
+        seat_change=None,
+    )
+
+    return [
+        TranscriptFeatures.model_validate(cache[key(s)])
+        if s else empty.model_copy()
+        for s in summaries
+    ]

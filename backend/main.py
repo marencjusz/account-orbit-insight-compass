@@ -3,7 +3,7 @@ import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from .scoring.model import score_accounts
-from .mock_engine import account_insight
+from .insights import generate_insight
 from .schemas import InsightRequest, InsightResponse, ScoreResponse
 
 
@@ -12,7 +12,7 @@ app = FastAPI(title="Account Intelligence API")
 app.state.accounts_df = None
 app.state.raw_accounts = {}
 app.state.scored_accounts = {}
-
+app.state.insight_cache = {}
 
 @app.get("/api/health")
 def health():
@@ -21,7 +21,14 @@ def health():
 
 @app.post("/api/score", response_model=ScoreResponse)
 def score(file: UploadFile = File(...)) -> ScoreResponse:
-    df = pd.read_csv(file.file)
+
+    app.state.insight_cache = {}
+
+    df = pd.read_csv(
+        file.file,
+        keep_default_na=False,
+        na_values=[""],
+    )
 
     # Never use the supervised target during inference
     df = df.drop(
@@ -56,16 +63,24 @@ def score(file: UploadFile = File(...)) -> ScoreResponse:
     return ScoreResponse(accounts=results)
 
 
+
 @app.post("/api/insight", response_model=InsightResponse)
 def insight(request: InsightRequest) -> InsightResponse:
-    row = app.state.raw_accounts.get(request.account_id)
-    score = app.state.scored_accounts.get(request.account_id)
 
-    if row is None or score is None:
+    account_id = request.account_id
+
+    account = app.state.raw_accounts.get(account_id)
+    score = app.state.scored_accounts.get(account_id)
+
+    if account is None or score is None:
         raise HTTPException(
             status_code=404,
             detail="Account not found. Upload a CSV first.",
         )
 
-    # Still mocked — we'll integrate AI next
-    return account_insight(row, score)
+    if account_id not in app.state.insight_cache:
+        app.state.insight_cache[account_id] = generate_insight(
+            account, score
+        )
+
+    return app.state.insight_cache[account_id]
