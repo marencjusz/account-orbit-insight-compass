@@ -40,7 +40,7 @@ O_NUM = [
     "ai_usage",
     "nr_support_tickets",
     "days_to_next_renewal",
-    "log_days_since_contact",
+    "days_since_last_sales_activity",
 ]
 
 O_CAT = [
@@ -51,7 +51,7 @@ O_CAT = [
 OUTCOMES = ["loss", "stable", "expansion"]
 
 M_NUM = [
-    "log_days_since_contact",
+    "days_since_last_sales_activity",
     "seat_change",
     "seat_utilization",
     "seat_penetration"
