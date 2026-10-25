@@ -48,7 +48,7 @@ O_CAT = [
     "reason",
 ]
 
-OUTCOMES = ["churn", "contraction", "stable", "expansion"]
+OUTCOMES = ["loss", "stable", "expansion"]
 
 M_NUM = [
     "log_days_since_contact",
@@ -94,8 +94,8 @@ def expected_fraction(probs, classes, magnitudes):
 
     return (
         probs[:, indices["stable"]]
-        + probs[:, indices["contraction"]]
-          * (1 - magnitudes["contraction"])
+        + probs[:, indices["loss"]]
+          * (1 - magnitudes["loss"])
         + probs[:, indices["expansion"]]
           * (1 + magnitudes["expansion"])
     )
@@ -187,11 +187,11 @@ def predict_magnitudes(
     data: pd.DataFrame,
 ) -> dict[str, np.ndarray]:
 
-    contraction = models["loss"].predict(data)
+    loss = models["loss"].predict(data)
     expansion = models["expansion"].predict(data)
 
     return {
-        "contraction": np.clip(contraction, 0, 1),
+        "loss": np.clip(loss, 0, 1),
         "expansion": np.maximum(expansion, 0),
     }
 
@@ -220,23 +220,24 @@ def train_model(df: pd.DataFrame) -> None:
 
 
 
+
 def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
     artifact = joblib.load(MODEL_PATH)
 
-    data = prepare_scoring_data(df)
+    data = prepare_scoring_data(df).reset_index(drop=True)
     outcome = artifact["outcome"]
     magnitudes = artifact["magnitudes"]
     classes = outcome.named_steps["classifier"].classes_
 
-    # Counterfactual datasets
+    # Counterfactual scenarios
     x0 = data
     x1 = set_contact_recency(data, 0)
 
-    # Predict outcome probabilities under each treatment
+    # Outcome probabilities
     p0 = outcome.predict_proba(x0)
     p1 = outcome.predict_proba(x1)
 
-    # Predict account-specific revenue change magnitudes
+    # Conditional revenue-change magnitudes
     m0 = predict_magnitudes(magnitudes, x0)
     m1 = predict_magnitudes(magnitudes, x1)
 
@@ -247,11 +248,11 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
         .to_numpy()
     )
 
-    # Expected revenue with and without intervention
+    # Expected revenue in both scenarios
     r0 = revenue * expected_fraction(p0, classes, m0)
     r1 = revenue * expected_fraction(p1, classes, m1)
 
-    # Estimated nonnegative intervention value
+    # Estimated intervention value
     uplift = np.maximum(r1 - r0, 0)
     max_uplift = max(float(uplift.max()), 1e-9)
 
@@ -262,7 +263,7 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
 
     scores = []
 
-    for i, row in data.reset_index(drop=True).iterrows():
+    for i, row in data.iterrows():
         p = {
             label: float(p0[i, indices[label]])
             for label in OUTCOMES
@@ -271,13 +272,10 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
         money = float(revenue[i])
         has_revenue = pd.notna(row["current_revenue"])
 
-        # Expected financial exposure without intervention
-        risk = money * (
-            p["churn"]
-            + p["contraction"] * m0["contraction"][i]
-        )
+        # Expected revenue loss without new contact
+        risk = money * p["loss"] * m0["loss"][i]
 
-        # Expected expansion value without intervention
+        # Expected expansion without new contact
         expansion = (
             money
             * p["expansion"]
@@ -294,11 +292,9 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
             else None
         )
 
-        # Primary attention signal
-        if p["churn"] > 0.25:
+        # Primary attention signal (temporary FE logic)
+        if p["loss"] > 0.25:
             signal = "churn_risk"
-        elif p["contraction"] > 0.20:
-            signal = "contraction_risk"
         elif p["expansion"] > 0.5:
             signal = "expansion_opportunity"
         elif pd.notna(renewal) and renewal <= 60:
@@ -315,7 +311,7 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
             account_id=str(row["account_id"]),
             account_name=(
                 str(row["account_name"])
-                if pd.notna(row.get("account_name"))
+                if pd.notna(row["account_name"])
                 else None
             ),
             current_revenue=money if has_revenue else None,
@@ -328,7 +324,8 @@ def score_accounts(df: pd.DataFrame) -> list[ScoredAccount]:
                 round(float(risk), 2) if has_revenue else None
             ),
             expansion_opportunity=(
-                round(float(expansion), 2) if has_revenue else None
+                round(float(expansion), 2)
+                if has_revenue else None
             ),
             urgency_score=urgency,
             signals={
